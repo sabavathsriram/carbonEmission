@@ -1,0 +1,14 @@
+{
+  "company@gmail.com": {
+    "email": "company@gmail.com",
+    "name": "santhosh",
+    "hashed_password": "$2b$12$RDEohyzQZaA5uTrr.s5rc.w0Jmp4rBbiwW6zY28AxRqDtN1w6Lb9W",
+    "role": "user"
+  },
+  "santhosh2005@gmail.com": {
+    "email": "santhosh2005@gmail.com",
+    "name": "santhosh",
+    "hashed_password": "$2b$12$BRMLvgKyGvQROSPqoFsSR.XFlFuT7OfIPvB56N9dtOEPNQY4eSWBi",
+    "role": "user"
+  }
+}

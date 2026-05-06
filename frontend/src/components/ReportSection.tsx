@@ -1,11 +1,14 @@
-import React, { useState } from 'react';
-import { FileDown, Building2, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FileDown, Building2, Loader2, CheckCircle, AlertCircle, Sparkles } from 'lucide-react';
 import { generateReport } from '../api';
-import { CompanyDetails, ExtractedData, EmissionResult } from '../types';
+import type { CompanyDetails, ExtractedData, EmissionResult, ESGData, Recommendation, Forecast } from '../types';
 
 interface Props {
   extractedData: ExtractedData;
   emissionResult: EmissionResult;
+  esgData?: ESGData;
+  recommendations?: Recommendation[];
+  forecast?: Forecast;
 }
 
 const INDUSTRIES = [
@@ -14,7 +17,11 @@ const INDUSTRIES = [
   'Agriculture', 'Hospitality', 'Education', 'Other',
 ];
 
-export default function ReportSection({ extractedData, emissionResult }: Props) {
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+export default function ReportSection({ extractedData, emissionResult, esgData, recommendations, forecast }: Props) {
   const [company, setCompany] = useState<CompanyDetails>({
     company_name: '',
     industry: '',
@@ -23,24 +30,74 @@ export default function ReportSection({ extractedData, emissionResult }: Props) 
     contact_email: '',
     additional_notes: '',
   });
+  const [autoFilled, setAutoFilled] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Auto-fill from extracted data on mount
+  useEffect(() => {
+    const filled = new Set<string>();
+    const updates: Partial<CompanyDetails> = {};
+
+    if (extractedData.vendor_name) {
+      updates.company_name = extractedData.vendor_name;
+      filled.add('company_name');
+    }
+    if (extractedData.invoice_date) {
+      // Use invoice date as reporting period hint
+      const date = new Date(extractedData.invoice_date);
+      if (!isNaN(date.getTime())) {
+        const month = date.toLocaleString('default', { month: 'long' });
+        const year = date.getFullYear();
+        updates.reporting_period = `${month} ${year}`;
+        filled.add('reporting_period');
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      setCompany(prev => ({ ...prev, ...updates }));
+      setAutoFilled(filled);
+    }
+  }, [extractedData]);
+
   const update = (field: keyof CompanyDetails, value: string) =>
-    setCompany((prev) => ({ ...prev, [field]: value }));
+    setCompany(prev => ({ ...prev, [field]: value }));
+
+  // Determine which fields are missing
+  const requiredFields: Array<{ key: keyof CompanyDetails; label: string }> = [
+    { key: 'company_name', label: 'Company Name' },
+    { key: 'industry', label: 'Industry' },
+    { key: 'reporting_period', label: 'Reporting Period' },
+  ];
+
+  const missingRequired = requiredFields.filter(f => !company[f.key]);
+  const allRequiredFilled = missingRequired.length === 0;
+
+  // Optional fields that are missing
+  const optionalMissing = [
+    { key: 'contact_name' as keyof CompanyDetails, label: 'Contact Name' },
+    { key: 'contact_email' as keyof CompanyDetails, label: 'Contact Email' },
+  ].filter(f => !company[f.key]);
+
+  const allFieldsFilled = allRequiredFilled && optionalMissing.length === 0;
 
   const handleGenerate = async () => {
-    if (!company.company_name || !company.industry || !company.reporting_period) {
+    if (!allRequiredFilled) {
       setStatus('error');
-      setErrorMsg('Please fill in Company Name, Industry, and Reporting Period.');
+      setErrorMsg(`Please fill in: ${missingRequired.map(f => f.label).join(', ')}`);
+      return;
+    }
+    if (company.contact_email && !isValidEmail(company.contact_email)) {
+      setStatus('error');
+      setErrorMsg('Please enter a valid email address.');
       return;
     }
     setLoading(true);
     setStatus('idle');
     setErrorMsg('');
     try {
-      const blob = await generateReport(company, extractedData, emissionResult);
+      const blob = await generateReport(company, extractedData, emissionResult, esgData, recommendations, forecast);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -63,64 +120,96 @@ export default function ReportSection({ extractedData, emissionResult }: Props) 
         Generate Report
       </h2>
 
+      {/* Auto-fill notice */}
+      {autoFilled.size > 0 && (
+        <div className="autofill-notice">
+          <Sparkles size={14} />
+          <span>
+            {autoFilled.size} field{autoFilled.size > 1 ? 's' : ''} auto-filled from document
+            ({Array.from(autoFilled).map(f => f.replace('_', ' ')).join(', ')})
+          </span>
+        </div>
+      )}
+
+      {/* All fields detected */}
+      {allFieldsFilled && (
+        <div className="success-banner" style={{ marginBottom: 16 }}>
+          <CheckCircle size={15} />
+          All report details detected successfully — ready to generate
+        </div>
+      )}
+
+      {/* Only show fields that are missing or need input */}
       <div className="form-grid">
-        <div className="form-group required">
-          <label>Company Name</label>
+        {/* Company Name — always show */}
+        <div className={`form-group required ${autoFilled.has('company_name') ? 'autofilled' : ''}`}>
+          <label>
+            Company Name
+            {autoFilled.has('company_name') && <span className="autofill-tag">Auto-filled</span>}
+          </label>
           <input
             type="text"
             placeholder="Acme Corporation"
             value={company.company_name}
-            onChange={(e) => update('company_name', e.target.value)}
+            onChange={e => update('company_name', e.target.value)}
           />
         </div>
 
+        {/* Industry — always show */}
         <div className="form-group required">
           <label>Industry</label>
-          <select value={company.industry} onChange={(e) => update('industry', e.target.value)}>
+          <select value={company.industry} onChange={e => update('industry', e.target.value)}>
             <option value="">Select industry...</option>
-            {INDUSTRIES.map((ind) => (
+            {INDUSTRIES.map(ind => (
               <option key={ind} value={ind}>{ind}</option>
             ))}
           </select>
         </div>
 
-        <div className="form-group required">
-          <label>Reporting Period</label>
+        {/* Reporting Period */}
+        <div className={`form-group required ${autoFilled.has('reporting_period') ? 'autofilled' : ''}`}>
+          <label>
+            Reporting Period
+            {autoFilled.has('reporting_period') && <span className="autofill-tag">Auto-filled</span>}
+          </label>
           <input
             type="text"
             placeholder="e.g. Q1 2024 or Jan–Mar 2024"
             value={company.reporting_period}
-            onChange={(e) => update('reporting_period', e.target.value)}
+            onChange={e => update('reporting_period', e.target.value)}
           />
         </div>
 
+        {/* Contact Name */}
         <div className="form-group">
           <label>Contact Name</label>
           <input
             type="text"
             placeholder="Jane Smith"
             value={company.contact_name}
-            onChange={(e) => update('contact_name', e.target.value)}
+            onChange={e => update('contact_name', e.target.value)}
           />
         </div>
 
+        {/* Contact Email */}
         <div className="form-group">
           <label>Contact Email</label>
           <input
             type="email"
             placeholder="jane@company.com"
             value={company.contact_email}
-            onChange={(e) => update('contact_email', e.target.value)}
+            onChange={e => update('contact_email', e.target.value)}
           />
         </div>
 
+        {/* Additional Notes */}
         <div className="form-group full-width">
           <label>Additional Notes</label>
           <textarea
             placeholder="Any additional context for the report..."
             value={company.additional_notes}
-            onChange={(e) => update('additional_notes', e.target.value)}
-            rows={3}
+            onChange={e => update('additional_notes', e.target.value)}
+            rows={2}
           />
         </div>
       </div>

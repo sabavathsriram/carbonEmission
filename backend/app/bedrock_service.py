@@ -1,4 +1,5 @@
 import json
+import re
 import boto3
 import logging
 from typing import Optional
@@ -15,7 +16,7 @@ Analyze the following text and extract all relevant information. Return a JSON o
 - invoice_number: string
 - total_amount: number (total invoice amount)
 - currency: string (e.g. USD, EUR, GBP)
-- line_items: array of objects with fields: description, quantity, unit, amount, currency, category
+- line_items: array of objects with fields: description, quantity, unit, amount, currency, category (limit to 5 most important items)
 - energy_kwh: number (electricity consumption in kWh if present)
 - fuel_liters: number (fuel volume in liters if present, convert gallons to liters if needed)
 - fuel_type: string (diesel, petrol, natural_gas, etc.)
@@ -28,15 +29,100 @@ For any field not found, use null. Be precise with numbers.
 Document text:
 {text}
 
-Return ONLY valid JSON, no explanation."""
+Return ONLY valid JSON, no explanation. Keep line_items to 5 entries max."""
+
+
+def summarize_csv(text: str, max_chars: int = 4000) -> str:
+    """
+    Summarize large CSV files by taking header + sample rows + totals.
+    """
+    lines = text.strip().split('\n')
+    if len(lines) <= 20:
+        return text[:max_chars]
+    
+    # Take header + first 10 rows + last 5 rows
+    header = lines[0] if lines else ""
+    sample_rows = lines[1:11]
+    tail_rows = lines[-5:]
+    
+    summary = [header]
+    summary.extend(sample_rows)
+    summary.append("... [middle rows omitted] ...")
+    summary.extend(tail_rows)
+    
+    result = '\n'.join(summary)
+    return result[:max_chars]
+
+
+def preprocess_text(text: str) -> str:
+    """
+    Preprocess input text for better extraction.
+    For CSVs, summarize. For all text, limit size.
+    """
+    # Detect CSV
+    if ',' in text[:200] and '\n' in text[:200]:
+        lines = text.split('\n')
+        if len(lines) > 20 and all(',' in line for line in lines[:5]):
+            logger.info(f"Detected CSV with {len(lines)} lines, summarizing...")
+            return summarize_csv(text, max_chars=4000)
+    
+    # Otherwise just truncate
+    return text[:6000]
+
+
+def extract_json_from_text(text: str) -> dict:
+    """
+    Extract JSON from text, handling markdown fences and truncation.
+    """
+    # Strip markdown code fences
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+    elif "```" in text:
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+    
+    text = text.strip()
+    
+    # Try parsing as-is
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.warning(f"JSON parse failed: {e}, attempting repair...")
+    
+    # Attempt to repair truncated JSON
+    # Find the last complete field before truncation
+    try:
+        # Remove trailing incomplete content
+        text = re.sub(r',\s*$', '', text)  # trailing comma
+        text = re.sub(r':\s*$', ': null', text)  # incomplete value
+        text = re.sub(r':\s*"[^"]*$', ': null', text)  # incomplete string
+        text = re.sub(r':\s*\[[^\]]*$', ': []', text)  # incomplete array
+        
+        # Ensure proper closing
+        open_braces = text.count('{') - text.count('}')
+        open_brackets = text.count('[') - text.count(']')
+        
+        text = text.rstrip(',')
+        text += ']' * open_brackets
+        text += '}' * open_braces
+        
+        return json.loads(text)
+    except Exception as repair_error:
+        logger.error(f"JSON repair failed: {repair_error}")
+        # Return minimal valid JSON
+        return {}
 
 
 def get_bedrock_client():
     """Create and return a Bedrock runtime client."""
     kwargs = {"region_name": settings.aws_region}
-    if settings.aws_access_key_id and settings.aws_secret_access_key:
+    if settings.aws_access_key_id:
         kwargs["aws_access_key_id"] = settings.aws_access_key_id
+    if settings.aws_secret_access_key:
         kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+    if settings.aws_session_token:
+        kwargs["aws_session_token"] = settings.aws_session_token
     return boto3.client("bedrock-runtime", **kwargs)
 
 
@@ -47,11 +133,15 @@ def extract_data_with_bedrock(text: str) -> tuple[ExtractedData, float]:
     """
     try:
         client = get_bedrock_client()
-        prompt = EXTRACTION_PROMPT.format(text=text[:8000])  # limit input size
+        
+        # Preprocess input (summarize CSVs, truncate long text)
+        processed_text = preprocess_text(text)
+        prompt = EXTRACTION_PROMPT.format(text=processed_text)
 
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 2048,
+            "max_tokens": 3000,  # Increased for larger responses
+            "temperature": 0.0,   # Deterministic for data extraction
             "messages": [
                 {"role": "user", "content": prompt}
             ]
@@ -67,25 +157,21 @@ def extract_data_with_bedrock(text: str) -> tuple[ExtractedData, float]:
         response_body = json.loads(response["body"].read())
         raw_output = response_body["content"][0]["text"].strip()
 
-        # Strip markdown code fences if present
-        if raw_output.startswith("```"):
-            raw_output = raw_output.split("```")[1]
-            if raw_output.startswith("json"):
-                raw_output = raw_output[4:]
+        # Extract and parse JSON with error handling
+        extracted_json = extract_json_from_text(raw_output)
 
-        extracted_json = json.loads(raw_output)
-
-        # Build line items
+        # Build line items (limit to 10 to avoid bloat)
         line_items = []
-        for item in extracted_json.get("line_items", []):
-            line_items.append(LineItem(
-                description=item.get("description", ""),
-                quantity=item.get("quantity"),
-                unit=item.get("unit"),
-                amount=item.get("amount"),
-                currency=item.get("currency"),
-                category=item.get("category"),
-            ))
+        for item in extracted_json.get("line_items", [])[:10]:
+            if isinstance(item, dict):
+                line_items.append(LineItem(
+                    description=item.get("description", ""),
+                    quantity=item.get("quantity"),
+                    unit=item.get("unit"),
+                    amount=item.get("amount"),
+                    currency=item.get("currency"),
+                    category=item.get("category"),
+                ))
 
         extracted = ExtractedData(
             vendor_name=extracted_json.get("vendor_name"),

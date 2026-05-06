@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from pydantic import BaseModel
+from typing import Optional, List, Any
 from enum import Enum
 
 
@@ -32,6 +32,7 @@ class ExtractedData(BaseModel):
     transport_mode: Optional[str] = None
     waste_kg: Optional[float] = None
     raw_text: Optional[str] = None
+    source_filename: Optional[str] = None
 
 
 class EmissionResult(BaseModel):
@@ -61,10 +62,48 @@ class ReportRequest(BaseModel):
     company_details: CompanyDetails
     extracted_data: ExtractedData
     emission_result: EmissionResult
+    esg_data: Optional[dict] = None
+    recommendations: Optional[List[dict]] = None
+    forecast: Optional[dict] = None
+
+
+class ValidationIssueModel(BaseModel):
+    field: str
+    severity: str
+    message: str
+    current_value: Optional[float] = None
+    suggested_value: Optional[float] = None
+
+
+class ValidationResultModel(BaseModel):
+    is_valid: bool
+    requires_review: bool
+    issues: List[ValidationIssueModel]
+    confidence_adjustment: float
+
+
+class ESGData(BaseModel):
+    score: float
+    grade: str
+    label: str
+    color: str
+    breakdown: dict
 
 
 class ProcessResponse(BaseModel):
     extracted_data: ExtractedData
     emission_result: EmissionResult
+    validation: ValidationResultModel
+    esg: Optional[ESGData] = None
+    simulations: Optional[List[dict]] = None
+    recommendations: Optional[List[dict]] = None
+    alerts: Optional[List[dict]] = None
+    forecast: Optional[dict] = None
+    traceability: Optional[List[dict]] = None
     success: bool = True
     message: str = ""
+
+
+class UpdateExtractedDataRequest(BaseModel):
+    extracted_data: ExtractedData
+    approved: bool = False
