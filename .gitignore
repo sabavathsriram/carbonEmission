@@ -1,0 +1,47 @@
+# ── Secrets — NEVER commit these ──────────────────────────────
+backend/.env
+*.env
+.env.example
+.env.local
+.env.production
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+*.so
+.pytest_cache/
+.mypy_cache/
+
+# ── Node / Frontend ───────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+node_modules/
+dist/
+.npm
+
+# ── AWS / credentials ─────────────────────────────────────────
+.aws/
+users.json
+backend/users.json
+
+# ── IDE ───────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+logs/
